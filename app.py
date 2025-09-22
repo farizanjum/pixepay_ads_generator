@@ -815,6 +815,7 @@ def create_ads_table(table_name: str, description: str = ""):
             page_profile_uri TEXT,
             state_media_run_label TEXT,
             total_active_time TEXT,
+            upload_id INTEGER,
             saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             notes TEXT
         )
@@ -852,17 +853,29 @@ def save_ad_to_table(table_name: str, ad_data: dict, notes: str = ""):
     """Save an ad to specified table"""
     conn = sqlite3.connect('saved_ads.db')
     cursor = conn.cursor()
-    
+
     try:
         # Check if ad already exists
         cursor.execute(f'''
             SELECT id FROM {table_name} WHERE ad_archive_id = ?
         ''', (ad_data.get("ad_archive_id"),))
-        
+
         if cursor.fetchone():
             conn.close()
             return False, "Ad already exists in this collection"
-        
+
+        # Save image data to uploads table if we have an image URL
+        upload_id = None
+        image_url = ad_data.get("original_image_url") or ad_data.get("creative_url")
+        if image_url:
+            # Try to fetch and save the image
+            image_bytes = _fetch_image_bytes(image_url)
+            if image_bytes:
+                # Generate a filename based on ad_archive_id
+                filename = f"ad_{ad_data.get('ad_archive_id', 'unknown')}.png"
+                upload_id = save_uploaded_image(filename, "image/png", image_bytes)
+                print(f"💾 Saved image for ad {ad_data.get('ad_archive_id')} as upload_id {upload_id}")
+
         # Insert the ad
         cursor.execute(f'''
             INSERT INTO {table_name} (
@@ -870,8 +883,8 @@ def save_ad_to_table(table_name: str, ad_data: dict, notes: str = ""):
                 is_active, cta_text, cta_type, link_url, display_url, website_url,
                 original_image_url, video_url, collation_count, collation_id,
                 entity_type, page_entity_type, page_profile_picture_url,
-                page_profile_uri, state_media_run_label, total_active_time, notes
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                page_profile_uri, state_media_run_label, total_active_time, upload_id, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             ad_data.get("ad_archive_id"),
             ad_data.get("page_name"),
@@ -895,9 +908,10 @@ def save_ad_to_table(table_name: str, ad_data: dict, notes: str = ""):
             ad_data.get("page_profile_uri"),
             ad_data.get("state_media_run_label"),
             ad_data.get("total_active_time"),
+            upload_id,
             notes
         ))
-        
+
         conn.commit()
         conn.close()
         return True, "Ad saved successfully!"
@@ -933,9 +947,24 @@ def delete_saved_ad(table_name: str, ad_id: int):
     """Delete a saved ad"""
     conn = sqlite3.connect('saved_ads.db')
     cursor = conn.cursor()
-    
+
     cursor.execute(f'DELETE FROM {table_name} WHERE id = ?', (ad_id,))
-    
+
+    conn.commit()
+    conn.close()
+
+def delete_generated_images(gen_ids: List[int]):
+    """Delete generated images by their IDs"""
+    if not gen_ids:
+        return
+
+    conn = sqlite3.connect('saved_ads.db')
+    cursor = conn.cursor()
+
+    # Delete from generated_ads table
+    placeholders = ','.join('?' for _ in gen_ids)
+    cursor.execute(f'DELETE FROM generated_ads WHERE id IN ({placeholders})', gen_ids)
+
     conn.commit()
     conn.close()
 
@@ -1087,6 +1116,30 @@ def list_generated_for_session(session_id: int) -> List[Dict[str, Any]]:
     conn.close()
     return [
         {"id": r[0], "upload_id": r[1], "variant_id": r[2], "created_at": r[3]}
+        for r in rows
+    ]
+
+def list_generated_for_collection(table_name: str) -> List[Dict[str, Any]]:
+    """Get all generated images for a collection by finding sessions with matching source"""
+    conn = sqlite3.connect('saved_ads.db')
+    cursor = conn.cursor()
+
+    # Find sessions that were created from this collection
+    cursor.execute("SELECT id FROM sessions WHERE source = ?", (f"collection:{table_name}",))
+    session_ids = [r[0] for r in cursor.fetchall()]
+
+    if not session_ids:
+        conn.close()
+        return []
+
+    # Get all generated images from these sessions
+    placeholders = ','.join('?' for _ in session_ids)
+    cursor.execute(f'SELECT id, session_id, upload_id, variant_id, created_at FROM generated_ads WHERE session_id IN ({placeholders}) ORDER BY created_at DESC, id DESC', session_ids)
+    rows = cursor.fetchall()
+    conn.close()
+
+    return [
+        {"id": r[0], "session_id": r[1], "upload_id": r[2], "variant_id": r[3], "created_at": r[4]}
         for r in rows
     ]
 
@@ -1375,14 +1428,14 @@ def display_ad_card(ad, index, show_save_button=True):
     image_url = ad.get("original_image_url") or ad.get("creative_url")
     video_url = ad.get("video_url")
     display_url = ad.get("display_url")
-    
+
     with st.container():
         # Save button
         if show_save_button:
             if st.button(f"💾 Save", key=f"save_btn_{ad_id}_{index}", help="Save this ad"):
                 st.session_state.save_modal_ad = ad
                 st.rerun()
-        
+
         # Display media
         if video_url:
             try:
@@ -1416,7 +1469,7 @@ def display_ad_card(ad, index, show_save_button=True):
                 st.write("No creative images found")
             elif ad.get("creative_found"):
                 st.write(f"Creative found but no display URL set")
-        
+
         # Card info
         st.markdown(f"**{page_name}**")
         if start_date:
@@ -1427,13 +1480,13 @@ def display_ad_card(ad, index, show_save_button=True):
             st.caption(f"🔗 {display_url}")
         if cta_text:
             st.info(f"CTA: {cta_text}")
-        
+
         # Details expander
         with st.expander("View Details"):
             if ad.get('ad_archive_id'):
                 fb_url = f"https://www.facebook.com/ads/library/?id={ad['ad_archive_id']}"
                 st.markdown(f"[View on Facebook]({fb_url})")
-            
+
             col1, col2 = st.columns(2)
             with col1:
                 if ad.get('page_id'):
@@ -1444,7 +1497,7 @@ def display_ad_card(ad, index, show_save_button=True):
                     st.write(f"**CTA Type:** {ad['cta_type']}")
                 if ad.get('website_url'):
                     st.write(f"**Website:** {ad['website_url']}")
-            
+
             with col2:
                 if ad.get('end_date'):
                     st.write(f"**End Date:** {ad['end_date']}")
@@ -1464,6 +1517,77 @@ def display_ad_card(ad, index, show_save_button=True):
                         st.info(f"📸 Multiple creatives available ({len(creative_urls)} total)")
                 elif creative_found is False:
                     st.warning("❌ No creative images found")
+
+
+def display_saved_ad_card(ad, index, show_save_button=True):
+    """Display saved ad card with stored image data"""
+    page_name = ad.get("page_name") or "Unknown Page"
+    ad_id = ad.get("ad_archive_id") or f"ad_{index}"
+    is_active = ad.get("is_active")
+    cta_text = ad.get("cta_text")
+    start_date = ad.get("start_date")
+    display_url = ad.get("display_url")
+    upload_id = ad.get("upload_id")
+
+    with st.container():
+        # Display saved image from uploads table
+        if upload_id:
+            try:
+                img_bytes = get_upload_bytes(upload_id)
+                if img_bytes:
+                    st.image(img_bytes, width='stretch')
+                else:
+                    st.info("🖼️ Saved image not found")
+            except Exception as e:
+                st.info(f"🖼️ Error loading saved image: {str(e)[:50]}...")
+        else:
+            # Fallback to URL if no saved image
+            image_url = ad.get("original_image_url") or ad.get("creative_url")
+            if image_url:
+                try:
+                    st.image(image_url, width='stretch')
+                except Exception as e:
+                    st.info(f"🖼️ Image not available: {str(e)[:50]}...")
+            else:
+                st.info("🖼️ No image available")
+
+        # Card info
+        st.markdown(f"**{page_name}**")
+        if start_date:
+            st.caption(f"📅 {start_date}")
+        if is_active is not None:
+            st.caption(f"{'🟢 Active' if is_active else '🔴 Inactive'}")
+        if display_url:
+            st.caption(f"🔗 {display_url}")
+        if cta_text:
+            st.info(f"CTA: {cta_text}")
+
+        # Details expander
+        with st.expander("View Details"):
+            if ad.get('ad_archive_id'):
+                fb_url = f"https://www.facebook.com/ads/library/?id={ad['ad_archive_id']}"
+                st.markdown(f"[View on Facebook]({fb_url})")
+
+            col1, col2 = st.columns(2)
+            with col1:
+                if ad.get('page_id'):
+                    st.write(f"**Page ID:** {ad['page_id']}")
+                if ad.get('categories'):
+                    st.write(f"**Categories:** {ad['categories']}")
+                if ad.get('cta_type'):
+                    st.write(f"**CTA Type:** {ad['cta_type']}")
+                if ad.get('website_url'):
+                    st.write(f"**Website:** {ad['website_url']}")
+
+            with col2:
+                if ad.get('end_date'):
+                    st.write(f"**End Date:** {ad['end_date']}")
+                if ad.get('total_active_time'):
+                    st.write(f"**Active Time:** {ad['total_active_time']}")
+                if ad.get('collation_count'):
+                    st.write(f"**Similar Ads:** {ad['collation_count']}")
+                if ad.get('entity_type'):
+                    st.write(f"**Entity Type:** {ad['entity_type']}")
 
 # =============================================================================
 # PAGE CONFIG
@@ -2216,7 +2340,10 @@ def main():
                             st.rerun()
                 
                 st.caption(f"Created: {created[:10] if created else 'Unknown'}")
-                
+
+                # Generation settings
+                desired_count = st.slider("Number of variants per ad", min_value=1, max_value=10, value=5, key="collection_desired_count")
+
                 # Controls to save/generate for the entire collection
                 st.markdown('<div class="generate-sticky">', unsafe_allow_html=True)
                 colX, colY = st.columns([1,1])
@@ -2259,8 +2386,8 @@ def main():
                                 if checked:
                                     selected_ads.append(ad)
 
-                                # Display the ad card
-                                display_ad_card(ad, f"saved_{i}", False)
+                                # Display the ad card with saved image
+                                display_saved_ad_card(ad, f"saved_{i}", False)
                                 
                                 # Show notes if any
                                 if ad.get('notes'):
@@ -2297,11 +2424,21 @@ def main():
                                     if st.checkbox("Select", key=f"sel_saved_compact_{ad.get('id')}"):
                                         selected_ads.append(ad)
                                     
-                                    if ad.get('original_image_url'):
+                                    # Show saved image or fallback
+                                    upload_id = ad.get('upload_id')
+                                    if upload_id:
+                                        img_bytes = get_upload_bytes(upload_id)
+                                        if img_bytes:
+                                            st.image(img_bytes, width=150)
+                                        else:
+                                            st.write("🖼️ Saved image not found")
+                                    elif ad.get('original_image_url'):
                                         try:
                                             st.image(ad.get('original_image_url'), width=150)
                                         except:
                                             st.write("🖼️ Image not available")
+                                    else:
+                                        st.write("🖼️ No image")
                                 
                                 # View on Facebook button
                                 if ad.get('ad_archive_id'):
@@ -2309,6 +2446,90 @@ def main():
                                     st.markdown(f"[🔗 View on Facebook]({fb_url})")
                 else:
                     st.info("No ads in this collection yet. Save some ads from your search results!")
+
+                # Display generated images for this collection
+                generated_images = list_generated_for_collection(table_name)
+                if generated_images:
+                    st.markdown("---")
+                    st.markdown("### 🎨 Generated Images")
+
+                    # Bulk delete and download controls for generated images
+                    col1, col2, col3 = st.columns([2, 1, 1])
+                    with col1:
+                        select_all_gen = st.checkbox("Select All Generated", key=f"select_all_gen_{table_name}")
+                    with col2:
+                        if st.button("🗑️ Delete Selected", key=f"bulk_delete_gen_{table_name}", help="Delete selected generated images"):
+                            selected_to_delete = []
+                            for i, gen_img in enumerate(generated_images):
+                                if st.session_state.get(f"sel_gen_{table_name}_{gen_img['id']}", False):
+                                    selected_to_delete.append(gen_img['id'])
+
+                            if selected_to_delete:
+                                delete_generated_images(selected_to_delete)
+                                st.success(f"Deleted {len(selected_to_delete)} generated image(s)")
+                                st.rerun()
+                            else:
+                                st.warning("No generated images selected")
+                    with col3:
+                        if st.button("📥 Download All", key=f"download_all_gen_{table_name}", help="Download all generated images in this collection as ZIP"):
+                            import zipfile
+                            import io
+
+                            # Create a ZIP file in memory
+                            zip_buffer = io.BytesIO()
+                            with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                                for i, gen_img in enumerate(generated_images):
+                                    img_b = get_generated_image_bytes(gen_img['id'])
+                                    if img_b:
+                                        filename = f"collection_{table_name}_variant_{gen_img['variant_id'] or f'var_{i+1}'}.png"
+                                        zip_file.writestr(filename, img_b)
+
+                            zip_buffer.seek(0)
+                            st.download_button(
+                                label="📥 Download ZIP",
+                                data=zip_buffer.getvalue(),
+                                file_name=f"collection_{table_name}_generated_ads.zip",
+                                mime="application/zip",
+                                key=f"zip_dl_{table_name}"
+                            )
+
+                    if st.button("🗑️ Delete All Generated", key=f"delete_all_gen_{table_name}", help="Delete all generated images in this collection"):
+                        if st.session_state.get(f"confirm_delete_all_gen_{table_name}", False):
+                            all_ids = [gen_img['id'] for gen_img in generated_images]
+                            delete_generated_images(all_ids)
+                            st.success(f"Deleted all {len(all_ids)} generated image(s)")
+                            st.rerun()
+                        else:
+                            st.session_state[f"confirm_delete_all_gen_{table_name}"] = True
+                            st.warning("Click again to confirm deletion of ALL generated images")
+
+                    # Display generated images
+                    cols = st.columns(3)
+                    for i, gen_img in enumerate(generated_images):
+                        with cols[i % 3]:
+                            img_b = get_generated_image_bytes(gen_img['id']) or b""
+                            if img_b:
+                                # Selection checkbox
+                                is_selected = st.checkbox("Select", key=f"sel_gen_{table_name}_{gen_img['id']}", value=select_all_gen)
+
+                                cap = f"Variant {gen_img['variant_id'] or ''} • Generated {gen_img['created_at'][:19]}"
+                                st.image(img_b, width='stretch', caption=cap)
+
+                                # Action buttons
+                                col_dl, col_del = st.columns(2)
+                                with col_dl:
+                                    st.download_button(
+                                        label="📥 Download",
+                                        data=img_b,
+                                        file_name=f"collection_{table_name}_variant_{(gen_img['variant_id'] or 'unknown')}.png",
+                                        mime="image/png",
+                                        key=f"dl_gen_{table_name}_{gen_img['id']}"
+                                    )
+                                with col_del:
+                                    if st.button("🗑️ Delete", key=f"del_gen_{table_name}_{gen_img['id']}", help="Delete this generated image"):
+                                        delete_generated_images([gen_img['id']])
+                                        st.success("Generated image deleted")
+                                        st.rerun()
 
                 # Save selected to another collection
                 if save_sel_to_other and selected_ads:
@@ -2319,28 +2540,62 @@ def main():
                 if gen_collection and (selected_ads or saved_ads):
                     targets = selected_ads if selected_ads else saved_ads
                     status_obj2 = status_slot.status("Starting collection generation…", expanded=True)
-                    status_obj2.update(label="Fetching images…", state="running")
+
+                    # Progress bar for loading images
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+
+                    status_text.text("Loading saved images…")
                     grouped_images = []
                     upload_ids = []
                     for i, ad in enumerate(targets):
+                        progress = (i + 1) / len(targets)
+                        progress_bar.progress(progress)
+
+                        # First try to use locally saved image
+                        upload_id = ad.get("upload_id")
+                        img_bytes = None
+
+                        if upload_id:
+                            img_bytes = get_upload_bytes(upload_id)
+                            if img_bytes:
+                                grouped_images.append((f"saved_ad_{ad.get('id')}", img_bytes))
+                                upload_ids.append(upload_id)
+                                continue
+
+                        # Fallback: try to fetch from URL if local image not available
                         url = ad.get("original_image_url") or ad.get("creative_url")
-                        if not url:
-                            continue
-                        img_bytes = _fetch_image_bytes(url)
-                        if not img_bytes:
-                            st.error(f"Failed fetch for ad {i+1} (network/CDN). Skipping.")
-                            continue
-                        upload_id = save_uploaded_image(f"collection_{i}.png", "image/png", img_bytes)
-                        grouped_images.append((f"collection_{i}", img_bytes))
-                        upload_ids.append(upload_id)
+                        if url:
+                            status_text.text(f"Fetching image {i+1}/{len(targets)} from URL…")
+                            img_bytes = _fetch_image_bytes(url)
+                            if img_bytes:
+                                upload_id = save_uploaded_image(f"collection_{i}.png", "image/png", img_bytes)
+                                grouped_images.append((f"collection_{i}", img_bytes))
+                                upload_ids.append(upload_id)
+                                continue
+
+                        # If no image available, skip this ad
+                        st.warning(f"No image available for ad {i+1} ({ad.get('page_name', 'Unknown')}). Skipping.")
+
+                    progress_bar.progress(1.0)
+                    status_text.empty()
+
                     if grouped_images:
                         try:
-                            status_obj2.update(label="Analyzing with Assistant…", state="running")
+                            # Progress bar for analysis
+                            analysis_progress = st.progress(0)
+                            analysis_status = st.empty()
+                            analysis_status.text("Analyzing images with Assistant…")
+
                             sid = create_session(source=f"collection:{table_name}", note=f"{len(grouped_images)} images")
                             st.session_state.current_session_id = sid
                             link_session_uploads(sid, upload_ids)
+
                             # Default to desired_count slider above for collection as well
                             json_prompt, variants_json = ae.analyze_images(None, None, grouped_images, desired_count=desired_count)
+                            analysis_progress.progress(1.0)
+                            analysis_status.empty()
+
                             # Handle new direct prompt format
                             variants = None
                             if isinstance(variants_json, dict):
@@ -2354,7 +2609,12 @@ def main():
                             if not variants:
                                 status_obj2.update(label="No variants returned by assistant.", state="error")
                             else:
+                                # Progress bar for generation
+                                gen_progress = st.progress(0)
+                                gen_status = st.empty()
+
                                 status_obj2.update(label="Generating all variants…", state="running")
+
                                 # Show prompts prominently
                                 st.markdown("### 🎨 VU Engine Generated Prompts")
                                 for idx, v in enumerate(variants):
@@ -2366,7 +2626,13 @@ def main():
                                         value=prompt_text,
                                         height=120,
                                         key=f"collection_prompt_display_{idx}")
-                                for v in variants:
+
+                                # Generate images with progress tracking
+                                total_variants = len(variants)
+                                for i, v in enumerate(variants):
+                                    gen_progress.progress((i + 1) / total_variants)
+                                    gen_status.text(f"Generating image {i+1}/{total_variants}…")
+
                                     vid = v.get('id') or f"var_{variants.index(v)}"
                                     img_out = ae.generate_single_variant_image(
                                         os.getenv("GOOGLE_API_KEY"),
@@ -2377,6 +2643,9 @@ def main():
                                     if img_out:
                                         save_generated_image(upload_ids[0], vid, json_prompt, v, img_out)
                                         st.toast(f"Created image for {vid}")
+
+                                gen_progress.progress(1.0)
+                                gen_status.empty()
                                 status_obj2.update(label="Generation complete.", state="complete")
                         except Exception as e:
                             status_obj2.update(label=f"Analysis failed: {e}", state="error")
@@ -2419,119 +2688,7 @@ def main():
 
     elif tab == "Generated Ads":
         st.title("🎨 Generated Ads")
-        st.markdown("Upload images, select the ones to process, then generate variants using your assistant. Originals appear together, followed by generated variants.")
-
-        uploaded_files = st.file_uploader("Upload ad images", type=["png","jpg","jpeg","webp"], accept_multiple_files=True)
-        if uploaded_files:
-            for f in uploaded_files:
-                data = f.read()
-                _ = save_uploaded_image(f.name, getattr(f, 'type', 'image/png'), data)
-            st.success(f"Uploaded {len(uploaded_files)} image(s)")
-            st.experimental_rerun()
-
-        uploads = list_uploaded_images()
-        if not uploads:
-            st.info("No uploads yet. Use the uploader above to add images.")
-        else:
-            selected_ids = []
-            with st.container():
-                cols = st.columns(3)
-                for i, up in enumerate(uploads):
-                    with cols[i % 3]:
-                        img_bytes = get_upload_bytes(up["id"])  # preview
-                        if img_bytes:
-                            st.image(img_bytes, width='stretch')
-                        selected = st.checkbox(up["filename"], key=f"sel_upload_{up['id']}")
-                        if selected:
-                            selected_ids.append(up["id"])
-
-            if selected_ids:
-                with st.container():
-                    st.markdown('<div class="generate-sticky">', unsafe_allow_html=True)
-                    clicked = st.button("Generate ADS", key="generate_ads_btn")
-                    st.markdown('</div>', unsafe_allow_html=True)
-                    if clicked:
-                        pass
-
-            if selected_ids and st.session_state.get("generate_ads_btn"):
-                with st.spinner("Analyzing and generating variants..."):
-                    # Create a session to group these uploads
-                    sid = create_session(source="upload", note=f"{len(selected_ids)} images")
-                    st.session_state.current_session_id = sid
-                    link_session_uploads(sid, selected_ids)
-                    # Analyze all selected uploads together
-                    images_payload = []
-                    for uid in selected_ids:
-                        img_bytes = get_upload_bytes(uid)
-                        if img_bytes:
-                            images_payload.append((f"upload_{uid}", img_bytes))
-                    json_prompt, variants_json = ae.analyze_images(None, None, images_payload, desired_count=5)
-                    variants = variants_json.get("variant") if isinstance(variants_json, dict) else None
-                    if not variants or not isinstance(variants, list):
-                        st.warning("Assistant did not return a variants list.")
-                    else:
-                        options = [v.get('id') or f'var_{i}' for i, v in enumerate(variants)]
-                        selected_vars = st.multiselect("Select variants to generate", options, default=options, key=f"upload_var_select_{sid}")
-                        for i, v in enumerate(variants):
-                            vid = v.get('id') or f'var_{i}'
-                            if vid not in selected_vars:
-                                continue
-                            prompt_text = ae.build_prompt_text(json_prompt, v)
-                            st.markdown(f"**🎯 VU Engine Prompt {i+1} ({vid}):**")
-                            st.text_area(
-                                f"Upload Prompt {i+1}",
-                                value=prompt_text,
-                                height=120,
-                                key=f"upload_prompt_display_{sid}_{i}")
-
-                            img_out = ae.generate_single_variant_image(
-                                os.getenv("GOOGLE_API_KEY"),
-                                json_prompt,
-                                v,
-                                size=size
-                            )
-                            if img_out:
-                                save_generated_image(selected_ids[0], vid, json_prompt, v, img_out)
-                    for uid in selected_ids:
-                        img_bytes = get_upload_bytes(uid)
-                        if not img_bytes:
-                            continue
-                        try:
-                            json_prompt, variants_json = ae.analyze_images(None, None, [(uid, img_bytes)], desired_count=5)
-                            # Handle new direct prompt format
-                            variants = None
-                            if isinstance(variants_json, dict):
-                                if "vu_engine_variants" in variants_json:
-                                    # Legacy format
-                                    variants = variants_json["vu_engine_variants"]
-                                elif "prompts" in variants_json:
-                                    # New direct format - convert to expected structure
-                                    prompts = variants_json["prompts"]
-                                    variants = [{"id": f"var_{i+1}", "prompt": prompt} for i, prompt in enumerate(prompts)]
-                            if not variants or not isinstance(variants, list):
-                                continue
-                            for v in variants:
-                                # Show the exact prompt used
-                                prompt_text = ae.build_prompt_text(json_prompt, v)
-                                st.markdown(f"**🎯 VU Engine Prompt ({v.get('id')}):**")
-                                st.text_area(
-                                    f"Single Upload Prompt {v.get('id')}",
-                                    value=prompt_text,
-                                    height=120,
-                                    key=f"single_upload_prompt_display_{uid}_{v.get('id')}")
-
-                                img_out = ae.generate_single_variant_image(
-                                    os.getenv("GOOGLE_API_KEY"),
-                                    json_prompt,
-                                    v,
-                                    size=size
-                                )
-                                if img_out:
-                                    save_generated_image(uid, v.get("id"), json_prompt, v, img_out)
-                        except Exception as gen_err:
-                            st.error(f"Generation failed for an image: {gen_err}")
-                st.success("Generation complete. Scroll down to see results in the gallery.")
-                st.experimental_rerun()
+        st.markdown("View your generated ad variants organized by sessions. Use the 'External Ads Generator' tab to upload and generate new ads.")
 
         st.markdown("---")
         st.subheader("Sessions")
@@ -2568,20 +2725,83 @@ def main():
             if not gens:
                 st.info("No generated images for this session yet.")
             else:
+                # Add bulk delete and download controls
+                col1, col2, col3 = st.columns([2, 1, 1])
+                with col1:
+                    select_all = st.checkbox("Select All", key=f"select_all_gen_{session['id']}")
+                with col2:
+                    if st.button("🗑️ Delete Selected", key=f"bulk_delete_gen_{session['id']}", help="Delete selected generated images"):
+                        # Get selected images and delete them
+                        selected_to_delete = []
+                        for i, g in enumerate(gens):
+                            if st.session_state.get(f"sel_gen_{session['id']}_{g['id']}", False):
+                                selected_to_delete.append(g['id'])
+
+                        if selected_to_delete:
+                            delete_generated_images(selected_to_delete)
+                            st.success(f"Deleted {len(selected_to_delete)} image(s)")
+                            st.rerun()
+                        else:
+                            st.warning("No images selected")
+                with col3:
+                    if st.button("📥 Download All", key=f"download_all_gen_{session['id']}", help="Download all generated images in this session as ZIP"):
+                        import zipfile
+                        import io
+
+                        # Create a ZIP file in memory
+                        zip_buffer = io.BytesIO()
+                        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+                            for i, g in enumerate(gens):
+                                img_b = get_generated_image_bytes(g['id'])
+                                if img_b:
+                                    filename = f"session_{session['id']}_variant_{g['variant_id'] or f'var_{i+1}'}.png"
+                                    zip_file.writestr(filename, img_b)
+
+                        zip_buffer.seek(0)
+                        st.download_button(
+                            label="📥 Download ZIP",
+                            data=zip_buffer.getvalue(),
+                            file_name=f"session_{session['id']}_generated_ads.zip",
+                            mime="application/zip",
+                            key=f"zip_dl_{session['id']}"
+                        )
+
+                if st.button("🗑️ Delete All", key=f"delete_all_gen_{session['id']}", help="Delete all generated images in this session"):
+                    if st.session_state.get(f"confirm_delete_all_{session['id']}", False):
+                        all_ids = [g['id'] for g in gens]
+                        delete_generated_images(all_ids)
+                        st.success(f"Deleted all {len(all_ids)} generated image(s)")
+                        st.rerun()
+                    else:
+                        st.session_state[f"confirm_delete_all_{session['id']}"] = True
+                        st.warning("Click again to confirm deletion of ALL generated images")
+
                 cols = st.columns(3)
                 for i, g in enumerate(gens):
                     with cols[i % 3]:
                         img_b = get_generated_image_bytes(g['id']) or b""
                         if img_b:
+                            # Selection checkbox
+                            is_selected = st.checkbox("Select", key=f"sel_gen_{session['id']}_{g['id']}", value=select_all)
+
                             cap = f"Variant {g['variant_id'] or ''} • from upload {g['upload_id']}"
                             st.image(img_b, width='stretch', caption=cap)
-                            st.download_button(
-                                label="Download",
-                                data=img_b,
-                                file_name=f"session_{session['id']}_variant_{(g['variant_id'] or 'unknown')}.png",
-                                mime="image/png",
-                                key=f"dl_{session['id']}_{g['id']}"
-                            )
+
+                            # Action buttons
+                            col_dl, col_del = st.columns(2)
+                            with col_dl:
+                                st.download_button(
+                                    label="📥 Download",
+                                    data=img_b,
+                                    file_name=f"session_{session['id']}_variant_{(g['variant_id'] or 'unknown')}.png",
+                                    mime="image/png",
+                                    key=f"dl_{session['id']}_{g['id']}"
+                                )
+                            with col_del:
+                                if st.button("🗑️ Delete", key=f"del_gen_{session['id']}_{g['id']}", help="Delete this image"):
+                                    delete_generated_images([g['id']])
+                                    st.success("Image deleted")
+                                    st.rerun()
 
 if __name__ == "__main__":
     main()
