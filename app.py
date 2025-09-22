@@ -2271,6 +2271,7 @@ def main():
             # Download All button
             col1, col2 = st.columns([1, 4])
             with col1:
+                import zipfile
 
                 zip_buffer = BytesIO()
                 with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:

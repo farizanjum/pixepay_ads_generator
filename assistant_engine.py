@@ -77,8 +77,8 @@ def _extract_prompts(text: str, desired_count: int = 5) -> List[str]:
         nonlocal current_prompt, in_prompt
         if current_prompt:
             prompt_text = " ".join(current_prompt).strip()
-            # Relaxed validation: accept any prompt starting with Create a/An
-            if prompt_text.lower().startswith(("create a ", "create an ")):
+            # Accept any reasonably long prompt (more flexible validation)
+            if len(prompt_text) > 20 and not prompt_text.lower().startswith(("here", "the ", "this", "that")):
                 prompts.append(prompt_text)
         current_prompt = []
         in_prompt = False
@@ -269,9 +269,16 @@ def analyze_images(api_key: Optional[str], assistant_id: Optional[str], images: 
         raise RuntimeError("No assistant response found")
 
     # VU Engine: Parse prompt-only output in the new format
-    prompts = _extract_prompts(raw, desired_count)
+    # Extract any non-empty lines as prompts (no validation)
+    lines = [l.strip() for l in raw.splitlines() if l.strip() and len(l.strip()) > 10]
+    prompts = lines[:desired_count]
+
+    # If we don't have enough prompts, duplicate the last one
+    while len(prompts) < desired_count and prompts:
+        prompts.append(prompts[-1])
+
     if not prompts:
-        raise RuntimeError("Assistant returned no prompts starting with 'Create a/An'. Please check the assistant's output or adjust instructions.")
+        raise RuntimeError("Assistant returned no usable prompts. Please check the assistant's output or adjust instructions.")
 
     # Return prompts directly in the new format structure
     base = {
