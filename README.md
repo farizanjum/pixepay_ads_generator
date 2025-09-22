@@ -2,7 +2,7 @@
 
 A powerful Facebook Ads Library scraper and AI-powered ad creative generator built with Streamlit, Apify, and Google Gemini.
 
-## 🚀 Features
+## Features
 
 ### Facebook Ads Library Integration
 - **Advanced Search**: Search Facebook ads by keywords, countries, and date ranges
@@ -77,7 +77,7 @@ A powerful Facebook Ads Library scraper and AI-powered ad creative generator bui
    ANALYSIS_ASSISTANT_ID=your_assistant_id_here
    ```
 
-## 🚀 Usage
+## Usage
 
 ### Running the Application
 
@@ -103,7 +103,7 @@ The app has 4 main tabs:
 3. **Generate Variants**: Use collections to generate AI-powered ad variants
 4. **Download Results**: Export generated ads as ZIP files
 
-## 📋 API Keys Setup
+## API Keys Setup
 
 ### Apify Setup
 1. Sign up at [Apify](https://apify.com)
@@ -115,7 +115,7 @@ The app has 4 main tabs:
 2. Create a new API key
 3. Enable image generation permissions
 
-## 🏗️ Architecture
+## Architecture
 
 ### Core Components
 
@@ -131,7 +131,7 @@ The app has 4 main tabs:
 - **SQLite**: Local database storage
 - **Pandas**: Data manipulation
 
-## 🔧 Development
+## Development
 
 ### Code Structure
 
@@ -152,11 +152,11 @@ pixepay_ads_generator/
 3. Make your changes
 4. Submit a pull request
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## 🤝 Support
+## Support
 
 For support and questions:
 - Open an issue on GitHub
@@ -166,7 +166,3 @@ For support and questions:
 ## 🔄 Updates
 
 Stay tuned for updates and new features! This project is actively maintained and improved.
-
----
-
-**Built with ❤️ using Streamlit, Apify, and Google Gemini**
