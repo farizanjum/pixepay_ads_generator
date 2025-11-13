@@ -2015,7 +2015,7 @@ def main():
                     save_click_persist = st.button("Save Selected to Collection", key="save_selected_btn_persist")
                 with colB:
                     generate_direct_persist = st.button("Generate ADS for Selected", key="generate_from_search_btn_persist")
-                desired_count = st.slider("Number of images to generate", min_value=1, max_value=10, value=5, key="search_desired_count")
+                desired_count = st.slider("Number of images to generate", min_value=1, max_value=5, value=3, key="search_desired_count")
                 st.markdown('</div>', unsafe_allow_html=True)
 
                 # Dedicated top status area (above cards)
@@ -2163,7 +2163,7 @@ def main():
         st.caption("Upload multiple images, analyze them with your Assistant to extract VU Engine prompts, and generate ad variations with Gemini 2.5 Flash Image Preview.")
 
         uploaded_files = st.file_uploader("Upload images", type=["png","jpg","jpeg","webp"], accept_multiple_files=True, key="external_ads_uploader")
-        desired_count_qt = st.slider("Number of prompts per image", min_value=1, max_value=10, value=5, key="qt_desired_count")
+        desired_count_qt = st.slider("Number of prompts per image", min_value=1, max_value=5, value=3, key="qt_desired_count")
 
         # Show uploaded images preview
         if uploaded_files:
@@ -2343,7 +2343,7 @@ def main():
                 st.caption(f"Created: {created[:10] if created else 'Unknown'}")
 
                 # Generation settings
-                desired_count = st.slider("Number of variants per ad", min_value=1, max_value=10, value=5, key="collection_desired_count")
+                desired_count = st.slider("Number of variants per ad", min_value=1, max_value=5, value=3, key="collection_desired_count")
 
                 # Controls to save/generate for the entire collection
                 st.markdown('<div class="generate-sticky">', unsafe_allow_html=True)
